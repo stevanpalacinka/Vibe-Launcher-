@@ -1,5 +1,10 @@
 name: build
-on: [push, workflow_dispatch]
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   apk:
     runs-on: ubuntu-latest
@@ -7,6 +12,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: 17 }
+      - name: Download rounded font
+        working-directory: VibeLauncher/VibeLauncher
+        run: |
+          mkdir -p app/src/main/assets/fonts
+          curl -fsSL -o app/src/main/assets/fonts/rounded.ttf "https://github.com/google/fonts/raw/main/ofl/varelaround/VarelaRound-Regular.ttf" || echo "font download failed, using system font"
       - uses: gradle/actions/setup-gradle@v4
         with: { gradle-version: "8.9" }
       - run: gradle assembleRelease
@@ -15,3 +25,8 @@ jobs:
         with:
           name: VibeLauncher-apk
           path: VibeLauncher/VibeLauncher/app/build/outputs/apk/release/*.apk
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Build ${{ github.run_number }}
+          files: VibeLauncher/VibeLauncher/app/build/outputs/apk/release/*.apk
