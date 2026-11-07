@@ -5,6 +5,14 @@ import android.content.Context
 import android.os.Environment
 import android.os.StatFs
 import androidx.compose.ui.draw.clip
+import android.view.KeyEvent
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.text.font.FontFamily
 import java.util.Calendar
 import android.content.Intent
@@ -61,6 +69,10 @@ const val LON = 21.90
 const val PLACE = "Niš"
 val SR: Locale = Locale.forLanguageTag("sr-Latn-RS")
 
+const val IDLE_MS = 30 * 60 * 1000L   // screensaver after 30 min idle (use 60_000L to test it)
+var lastInput by mutableLongStateOf(0L)
+var saverOn by mutableStateOf(false)
+
 // Rounded UI font. The GitHub build downloads app/src/main/assets/fonts/rounded.ttf (Varela Round);
 // if the file is missing the launcher falls back to the system font.
 var UiFont: FontFamily = FontFamily.SansSerif
@@ -70,7 +82,8 @@ fun uiFont(ctx: Context): FontFamily = try {
     FontFamily(Font("fonts/rounded.ttf", ctx.assets))
 } catch (e: Exception) { FontFamily.SansSerif }
 
-data class App(val label: String, val pkg: String, val icon: Bitmap)
+data class App(val label: String, val pkg: String, val icon: Bitmap, val isBanner: Boolean)
+data class Orb(val x: Float, val y: Float, val r: Float, val speed: Int, val ph: Float, val hue: Color)
 data class Day(val label: String, val code: Int, val hi: Int, val lo: Int)
 data class Wx(val temp: Int, val code: Int, val wind: Int, val days: List<Day>)
 
@@ -79,6 +92,21 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         UiFont = uiFont(this)
         setContent { Launcher() }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        saverOn = false
+        lastInput = System.currentTimeMillis()
+    }
+
+    override fun onUserInteraction() { lastInput = System.currentTimeMillis() }
+
+    // While the screensaver is showing, the first key press only wakes it up.
+    override fun dispatchKeyEvent(e: KeyEvent): Boolean {
+        lastInput = System.currentTimeMillis()
+        if (saverOn) { if (e.action == KeyEvent.ACTION_DOWN) saverOn = false; return true }
+        return super.dispatchKeyEvent(e)
     }
 }
 
@@ -89,7 +117,9 @@ fun loadApps(pm: PackageManager, self: String): List<App> {
         for (ri in pm.queryIntentActivities(q, 0)) {
             val p = ri.activityInfo.packageName
             if (p == self || out.containsKey(p)) continue
-            out[p] = App(ri.loadLabel(pm).toString(), p, ri.loadIcon(pm).toBitmap(192, 192))
+            val banner = ri.activityInfo.loadBanner(pm)
+            out[p] = if (banner != null) App(ri.loadLabel(pm).toString(), p, banner.toBitmap(320, 180), true)
+                     else App(ri.loadLabel(pm).toString(), p, ri.loadIcon(pm).toBitmap(192, 192), false)
         }
     }
     return out.values.sortedBy { it.label.lowercase() }
@@ -159,22 +189,43 @@ fun Modifier.bloom(): Modifier {
     }
 }
 
+// Ambience: slow drifting, twinkling light particles. Integer speeds keep the loop seamless.
 @Composable
-fun Tile(label: String, onClick: () -> Unit, framed: Boolean = true, content: @Composable () -> Unit) {
+fun Modifier.ambience(): Modifier {
+    val orbs = remember {
+        val rnd = kotlin.random.Random(7)
+        val cols = listOf(Color(0xFF93C5FD), Color(0xFFC4B5FD), Color(0xFFF9A8D4), Color(0xFFFDE68A))
+        List(18) { Orb(rnd.nextFloat(), rnd.nextFloat(), 2f + rnd.nextFloat() * 5f, 1 + rnd.nextInt(3), rnd.nextFloat() * 6.2832f, cols[rnd.nextInt(cols.size)]) }
+    }
+    val t by rememberInfiniteTransition(label = "amb").animateFloat(0f, 1f, infiniteRepeatable(tween(90000, easing = LinearEasing)), label = "t")
+    return drawBehind {
+        orbs.forEach { o ->
+            val y = ((o.y - t * o.speed) % 1f + 1f) % 1f
+            val x = o.x + sin(t * 6.2832f * o.speed + o.ph) * .02f
+            val tw = .5f + .5f * sin(t * 6.2832f * 6f * o.speed + o.ph)
+            val c = Offset(x * size.width, y * size.height)
+            drawCircle(o.hue.copy(alpha = .05f + .05f * tw), o.r.dp.toPx() * 3.2f, c)
+            drawCircle(o.hue.copy(alpha = .25f + .35f * tw), o.r.dp.toPx(), c)
+        }
+    }
+}
+
+@Composable
+fun Tile(label: String, onClick: () -> Unit, framed: Boolean = true, w: Dp = 132.dp, h: Dp = 112.dp, content: @Composable () -> Unit) {
     var focused by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(if (focused) 1.14f else 1f, spring(0.55f, 260f), label = "scale")
     val glow by animateFloatAsState(if (focused) 1f else 0f, tween(250), label = "glow")
     Column(
-        Modifier.width(132.dp)
+        Modifier.width(w)
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .onFocusChanged { focused = it.isFocused }
             .clickable(onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Box(
-            Modifier.size(112.dp)
-                .background(Color.White.copy(alpha = if (framed) .07f + .13f * glow else 0f), RoundedCornerShape(38.dp))
-                .border(2.dp, Color.White.copy(alpha = .9f * glow), RoundedCornerShape(38.dp)),
+            Modifier.size(w, h)
+                .background(Color.White.copy(alpha = if (framed) .07f + .13f * glow else 0f), RoundedCornerShape(10.dp))
+                .border(2.dp, Color.White.copy(alpha = .9f * glow), RoundedCornerShape(10.dp)),
             contentAlignment = Alignment.Center
         ) { content() }
         Spacer(Modifier.height(10.dp))
@@ -184,12 +235,12 @@ fun Tile(label: String, onClick: () -> Unit, framed: Boolean = true, content: @C
 
 @Composable
 fun WeatherCard(w: Wx) {
-    val (icon, text) = wxLabel(w.code)
+    val text = wxLabel(w.code).second
     Row(
-        Modifier.background(Color.White.copy(alpha = .08f), RoundedCornerShape(28.dp)).padding(28.dp, 20.dp),
+        Modifier.glass(28.dp).padding(28.dp, 20.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        T(icon, 56)
+        WxIcon(w.code, 64.dp)
         Spacer(Modifier.width(20.dp))
         Column {
             T(PLACE, 16, alpha = .7f)
@@ -200,8 +251,20 @@ fun WeatherCard(w: Wx) {
 }
 
 @Composable
+fun Modifier.glass(radius: Dp = 26.dp): Modifier = drawBehind {
+    val rad = CornerRadius(radius.toPx())
+    val diag = Offset(size.width, size.height)
+    drawRoundRect(Brush.linearGradient(listOf(Color.White.copy(alpha = .22f), Color.White.copy(alpha = .05f)), Offset.Zero, diag), cornerRadius = rad)
+    drawRoundRect(Brush.verticalGradient(listOf(Color.White.copy(alpha = .14f), Color.Transparent), endY = size.height * .5f), cornerRadius = rad)
+    drawRoundRect(
+        Brush.linearGradient(listOf(Color.White.copy(alpha = .7f), Color.White.copy(alpha = .05f), Color.White.copy(alpha = .3f)), Offset.Zero, diag),
+        cornerRadius = rad, style = Stroke(1.5f.dp.toPx())
+    )
+}
+
+@Composable
 fun Card(modifier: Modifier, title: String, content: @Composable ColumnScope.() -> Unit) {
-    Column(modifier.background(Color.White.copy(alpha = .08f), RoundedCornerShape(24.dp)).padding(20.dp)) {
+    Column(modifier.glass(26.dp).padding(20.dp)) {
         T(title, 15, FontWeight.Medium, .6f)
         Spacer(Modifier.height(12.dp))
         content()
@@ -214,7 +277,7 @@ fun ForecastCard(days: List<Day>, modifier: Modifier) = Card(modifier, "Prognoza
         days.forEach { d ->
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 T(d.label, 15, alpha = .7f)
-                T(wxLabel(d.code).first, 28)
+                WxIcon(d.code, 36.dp)
                 T("${d.hi}°/${d.lo}°", 15)
             }
         }
@@ -266,8 +329,94 @@ fun DeviceCard(modifier: Modifier) = Card(modifier, "Ovaj TV") {
     Bar("RAM", "%.1f GB slobodno".format(SR, mFree), (1 - mFree / mTotal).toFloat())
 }
 
+// Drawn weather icons: sun, clouds, rain, snow, fog and storm.
+@Composable
+fun WxIcon(code: Int, dp: Dp) = Spacer(Modifier.size(dp).drawBehind {
+    val s = size.minDimension
+    fun sun(cx: Float, cy: Float, r: Float) {
+        for (i in 0 until 8) rotate(i * 45f, Offset(cx, cy)) {
+            drawLine(Color(0xFFFCD34D), Offset(cx, cy - r * 1.45f), Offset(cx, cy - r * 1.85f), r * .28f, StrokeCap.Round)
+        }
+        drawCircle(Brush.radialGradient(listOf(Color(0xFFFFF3A0), Color(0xFFFBBF24)), Offset(cx, cy), r), r, Offset(cx, cy))
+    }
+    fun cloud(x: Float, y: Float, w: Float) {
+        val b = Brush.verticalGradient(listOf(Color.White, Color(0xFFC7D2FE)), y, y + w * .65f)
+        drawRoundRect(b, Offset(x + .05f * w, y + .35f * w), Size(.9f * w, .3f * w), CornerRadius(.15f * w))
+        drawCircle(b, .2f * w, Offset(x + .32f * w, y + .38f * w))
+        drawCircle(b, .27f * w, Offset(x + .6f * w, y + .3f * w))
+    }
+    fun drops(col: Color) {
+        for (i in 0..2) {
+            val x = (.3f + i * .2f) * s
+            drawLine(col, Offset(x, .66f * s), Offset(x - .05f * s, .84f * s), .07f * s, StrokeCap.Round)
+        }
+    }
+    when (code) {
+        0 -> sun(.5f * s, .5f * s, .24f * s)
+        1, 2 -> { sun(.36f * s, .34f * s, .17f * s); cloud(.2f * s, .3f * s, .75f * s) }
+        45, 48 -> {
+            cloud(.12f * s, .06f * s, .76f * s)
+            for (i in 0..2) drawLine(Color(0xAAFFFFFF), Offset((.2f + i * .05f) * s, (.68f + i * .1f) * s), Offset((.8f - i * .05f) * s, (.68f + i * .1f) * s), .06f * s, StrokeCap.Round)
+        }
+        in 51..67, in 80..82 -> { cloud(.12f * s, .06f * s, .76f * s); drops(Color(0xFF60A5FA)) }
+        in 71..77, 85, 86 -> {
+            cloud(.12f * s, .06f * s, .76f * s)
+            for (i in 0..2) drawCircle(Color.White, .05f * s, Offset((.3f + i * .2f) * s, (.74f + (i % 2) * .08f) * s))
+        }
+        in 95..99 -> {
+            cloud(.12f * s, .04f * s, .76f * s)
+            val bolt = Path().apply {
+                moveTo(.54f * s, .58f * s); lineTo(.38f * s, .8f * s); lineTo(.5f * s, .8f * s)
+                lineTo(.44f * s, .98f * s); lineTo(.66f * s, .72f * s); lineTo(.54f * s, .72f * s); close()
+            }
+            drawPath(bolt, Color(0xFFFCD34D))
+        }
+        else -> cloud(.12f * s, .2f * s, .76f * s)
+    }
+})
+
+fun DrawScope.petals(c: Offset, n: Int, angle: Float, k: Float, len: Float, wid: Float, from: Color, to: Color, a: Float) {
+    val b = Brush.linearGradient(listOf(from.copy(alpha = from.alpha * a), to.copy(alpha = to.alpha * a)), Offset(c.x, c.y - len), c)
+    for (i in 0 until n) rotate(angle + i * 360f / n, c) {
+        scale(k, c) { drawOval(b, Offset(c.x - wid / 2, c.y - len), Size(wid, len)) }
+    }
+}
+
+// Screensaver: the flower closes and blooms again and again, ring by ring.
+@Composable
+fun BloomSaver(modifier: Modifier) {
+    val inf = rememberInfiniteTransition(label = "saver")
+    val p by inf.animateFloat(0f, 1f, infiniteRepeatable(tween(16000, easing = LinearEasing)), label = "p")
+    val spin by inf.animateFloat(0f, 360f, infiniteRepeatable(tween(90000, easing = LinearEasing)), label = "spin")
+    Box(modifier.background(Color(0xFF05070D)).ambience()) {
+        Spacer(Modifier.fillMaxSize().drawBehind {
+            val c = Offset(size.width / 2, size.height / 2)
+            val r = minOf(size.width, size.height) * .46f
+            fun bloomAt(lag: Float) = .5f - .5f * cos(6.2832f * (p - lag))
+            val o1 = bloomAt(0f)
+            val o2 = bloomAt(.1f)
+            val o3 = bloomAt(.2f)
+            drawCircle(Brush.radialGradient(listOf(Color(0x662563EB), Color.Transparent), c, r * 1.6f), r * 1.6f, c)
+            petals(c, 8, spin + 45f * o1, .12f + .88f * o1, r, r * .5f, Color(0xB360A5FA), Color(0x597C3AED), .25f + .75f * o1)
+            petals(c, 8, 22.5f - spin * 2f - 40f * o2, .12f + .88f * o2, r * .65f, r * .34f, Color(0xB3F472B6), Color(0x597C3AED), .25f + .75f * o2)
+            petals(c, 12, spin * 3f + 30f * o3, .12f + .88f * o3, r * .34f, r * .16f, Color(0x99FDE68A), Color(0x40F472B6), .25f + .75f * o3)
+            drawCircle(Color(0xCCC4B5FD), r * .07f * (.6f + .4f * o3), c)
+        })
+    }
+}
+
 @Composable
 fun Launcher() {
+    LaunchedEffect(lastInput) { delay(IDLE_MS); saverOn = true }
+    val sa by animateFloatAsState(if (saverOn) 1f else 0f, tween(if (saverOn) 2500 else 250), label = "saverFade")
+    Box(Modifier.fillMaxSize()) {
+        Home()
+        if (sa > 0f) BloomSaver(Modifier.fillMaxSize().graphicsLayer { alpha = sa })
+    }
+}
+
+@Composable
+fun Home() {
     val ctx = LocalContext.current
     var apps by remember { mutableStateOf(emptyList<App>()) }
     var wx by remember { mutableStateOf<Wx?>(null) }
@@ -277,7 +426,7 @@ fun Launcher() {
     LaunchedEffect(Unit) { while (true) { now = Date(); delay(1000) } }
     BackHandler(true) { } // a launcher should never "back out"
 
-    Box(Modifier.fillMaxSize().background(Color(0xFF0B1026)).bloom()) {
+    Box(Modifier.fillMaxSize().background(Color(0xFF0B1026)).bloom().ambience()) {
         Column(Modifier.fillMaxSize().padding(horizontal = 64.dp, vertical = 48.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
                 Column(Modifier.weight(1f)) {
@@ -300,14 +449,15 @@ fun Launcher() {
             ) {
                 items(apps, key = { it.pkg }) { app ->
                     val img = remember(app.pkg) { app.icon.asImageBitmap() }
-                    Tile(app.label, { launch(ctx, app.pkg) }, framed = false) {
-                        Image(img, null, Modifier.size(108.dp).clip(RoundedCornerShape(36.dp)))
+                    Tile(app.label, { launch(ctx, app.pkg) }, framed = !app.isBanner, w = 200.dp, h = 112.dp) {
+                        if (app.isBanner) Image(img, null, Modifier.fillMaxSize().padding(2.dp).clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Crop)
+                        else Image(img, null, Modifier.size(72.dp))
                     }
                 }
                 item {
                     Tile("Podešavanja", {
                         ctx.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                    }) { T("⚙️", 48) }
+                    }, w = 200.dp, h = 112.dp) { T("⚙️", 48) }
                 }
             }
         }
