@@ -69,6 +69,10 @@ const val LON = 21.90
 const val PLACE = "Niš"
 val SR: Locale = Locale.forLanguageTag("sr-Latn-RS")
 
+// App tile size. Make TILE_H bigger for taller tiles, TILE_W for wider ones.
+val TILE_W: Dp = 200.dp
+val TILE_H: Dp = 140.dp
+
 const val IDLE_MS = 30 * 60 * 1000L   // screensaver after 30 min idle (use 60_000L to test it)
 var lastInput by mutableLongStateOf(0L)
 var saverOn by mutableStateOf(false)
@@ -449,7 +453,7 @@ fun Home() {
             ) {
                 items(apps, key = { it.pkg }) { app ->
                     val img = remember(app.pkg) { app.icon.asImageBitmap() }
-                    Tile(app.label, { launch(ctx, app.pkg) }, framed = !app.isBanner, w = 200.dp, h = 112.dp) {
+                    Tile(app.label, { launch(ctx, app.pkg) }, framed = !app.isBanner, w = TILE_W, h = TILE_H) {
                         if (app.isBanner) Image(img, null, Modifier.fillMaxSize().padding(2.dp).clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Crop)
                         else Image(img, null, Modifier.size(72.dp))
                     }
@@ -457,7 +461,7 @@ fun Home() {
                 item {
                     Tile("Podešavanja", {
                         ctx.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                    }, w = 200.dp, h = 112.dp) { T("⚙️", 48) }
+                    }, w = TILE_W, h = TILE_H) { T("⚙️", 48) }
                 }
             }
         }
